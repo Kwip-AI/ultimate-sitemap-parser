@@ -58,9 +58,10 @@ class SitemapFetcher(object):
         '_url',
         '_recursion_level',
         '_web_client',
+        '_prefix_filter',
     ]
 
-    def __init__(self, url: str, recursion_level: int, web_client: Optional[AbstractWebClient] = None):
+    def __init__(self, url: str, recursion_level: int, web_client: Optional[AbstractWebClient] = None, prefix_filter: Optional[str] = None):
 
         if recursion_level > self.__MAX_RECURSION_LEVEL:
             raise SitemapException("Recursion level exceeded {} for URL {}.".format(self.__MAX_RECURSION_LEVEL, url))
@@ -76,8 +77,14 @@ class SitemapFetcher(object):
         self._url = url
         self._web_client = web_client
         self._recursion_level = recursion_level
+        self._prefix_filter = prefix_filter
 
     def sitemap(self) -> AbstractSitemap:
+        if self._recursion_level > 0 and self._prefix_filter and self._url and not self._url.startswith(self._prefix_filter):
+            return InvalidSitemap(
+                url=self._url,
+                reason="URL does not match the prefix filter: {}".format(self._prefix_filter),
+            )
         log.info("Fetching level {} sitemap from {}...".format(self._recursion_level, self._url))
         response = get_url_retry_on_client_errors(url=self._url, web_client=self._web_client)
 
@@ -99,6 +106,7 @@ class SitemapFetcher(object):
                 content=response_content,
                 recursion_level=self._recursion_level,
                 web_client=self._web_client,
+                prefix_filter=self._prefix_filter,
             )
 
         else:
@@ -109,6 +117,7 @@ class SitemapFetcher(object):
                     content=response_content,
                     recursion_level=self._recursion_level,
                     web_client=self._web_client,
+                    prefix_filter=self._prefix_filter,
                 )
             else:
                 parser = PlainTextSitemapParser(
@@ -116,6 +125,7 @@ class SitemapFetcher(object):
                     content=response_content,
                     recursion_level=self._recursion_level,
                     web_client=self._web_client,
+                    prefix_filter=self._prefix_filter,
                 )
 
         log.info("Parsing sitemap from URL {}...".format(self._url))
@@ -132,13 +142,15 @@ class AbstractSitemapParser(object, metaclass=abc.ABCMeta):
         '_content',
         '_web_client',
         '_recursion_level',
+        '_prefix_filter',
     ]
 
-    def __init__(self, url: str, content: str, recursion_level: int, web_client: AbstractWebClient):
+    def __init__(self, url: str, content: str, recursion_level: int, web_client: AbstractWebClient, prefix_filter: str):
         self._url = url
         self._content = content
         self._recursion_level = recursion_level
         self._web_client = web_client
+        self._prefix_filter = prefix_filter
 
     @abc.abstractmethod
     def sitemap(self) -> AbstractSitemap:
@@ -148,8 +160,8 @@ class AbstractSitemapParser(object, metaclass=abc.ABCMeta):
 class IndexRobotsTxtSitemapParser(AbstractSitemapParser):
     """robots.txt index sitemap parser."""
 
-    def __init__(self, url: str, content: str, recursion_level: int, web_client: AbstractWebClient):
-        super().__init__(url=url, content=content, recursion_level=recursion_level, web_client=web_client)
+    def __init__(self, url: str, content: str, recursion_level: int, web_client: AbstractWebClient, prefix_filter):
+        super().__init__(url=url, content=content, recursion_level=recursion_level, web_client=web_client, prefix_filter=prefix_filter)
 
         if not self._url.endswith('/robots.txt'):
             raise SitemapException("URL does not look like robots.txt URL: {}".format(self._url))
@@ -178,6 +190,7 @@ class IndexRobotsTxtSitemapParser(AbstractSitemapParser):
                 url=sitemap_url,
                 recursion_level=self._recursion_level,
                 web_client=self._web_client,
+                prefix_filter=self._prefix_filter
             )
             fetched_sitemap = fetcher.sitemap()
             sub_sitemaps.append(fetched_sitemap)
@@ -222,8 +235,8 @@ class XMLSitemapParser(AbstractSitemapParser):
         '_concrete_parser',
     ]
 
-    def __init__(self, url: str, content: str, recursion_level: int, web_client: AbstractWebClient):
-        super().__init__(url=url, content=content, recursion_level=recursion_level, web_client=web_client)
+    def __init__(self, url: str, content: str, recursion_level: int, web_client: AbstractWebClient, prefix_filter: Optional[str] = None):
+        super().__init__(url=url, content=content, recursion_level=recursion_level, web_client=web_client, prefix_filter=prefix_filter)
 
         # Will be initialized when the type of sitemap is known
         self._concrete_parser = None
@@ -304,6 +317,7 @@ class XMLSitemapParser(AbstractSitemapParser):
             if name == 'sitemap:urlset':
                 self._concrete_parser = PagesXMLSitemapParser(
                     url=self._url,
+                    prefix_filter=self._prefix_filter,
                 )
 
             elif name == 'sitemap:sitemapindex':
@@ -311,16 +325,19 @@ class XMLSitemapParser(AbstractSitemapParser):
                     url=self._url,
                     web_client=self._web_client,
                     recursion_level=self._recursion_level,
+                    prefix_filter=self._prefix_filter,
                 )
 
             elif name == 'rss':
                 self._concrete_parser = PagesRSSSitemapParser(
                     url=self._url,
+                    prefix_filter=self._prefix_filter,
                 )
 
             elif name == 'feed':
                 self._concrete_parser = PagesAtomSitemapParser(
                     url=self._url,
+                    prefix_filter=self._prefix_filter,
                 )
 
             else:
@@ -398,14 +415,16 @@ class IndexXMLSitemapParser(AbstractXMLSitemapParser):
 
         # List of sub-sitemap URLs found in this index sitemap
         '_sub_sitemap_urls',
+        '_prefix_filter'
     ]
 
-    def __init__(self, url: str, web_client: AbstractWebClient, recursion_level: int):
+    def __init__(self, url: str, web_client: AbstractWebClient, recursion_level: int, prefix_filter: str):
         super().__init__(url=url)
 
         self._web_client = web_client
         self._recursion_level = recursion_level
         self._sub_sitemap_urls = []
+        self._prefix_filter = prefix_filter
 
     def xml_element_end(self, name: str) -> None:
 
@@ -430,7 +449,7 @@ class IndexXMLSitemapParser(AbstractXMLSitemapParser):
             try:
                 fetcher = SitemapFetcher(url=sub_sitemap_url,
                                          recursion_level=self._recursion_level + 1,
-                                         web_client=self._web_client)
+                                         web_client=self._web_client, prefix_filter=self._prefix_filter)
                 fetched_sitemap = fetcher.sitemap()
             except Exception as ex:
                 fetched_sitemap = InvalidSitemap(
@@ -579,13 +598,15 @@ class PagesXMLSitemapParser(AbstractXMLSitemapParser):
     __slots__ = [
         '_current_page',
         '_pages',
+        '_prefix_filter'
     ]
 
-    def __init__(self, url: str):
+    def __init__(self, url: str, prefix_filter: str):
         super().__init__(url=url)
 
         self._current_page = None
         self._pages = []
+        self._prefix_filter = prefix_filter
 
     def xml_element_start(self, name: str, attrs: Dict[str, str]) -> None:
 
@@ -669,6 +690,8 @@ class PagesXMLSitemapParser(AbstractXMLSitemapParser):
         for page_row in self._pages:
             page = page_row.page()
             if page:
+                if self._prefix_filter and not page.url.startswith(self._prefix_filter):
+                    continue
                 pages.append(page)
 
         pages_sitemap = PagesXMLSitemap(url=self._url, pages=pages)
@@ -737,13 +760,15 @@ class PagesRSSSitemapParser(AbstractXMLSitemapParser):
     __slots__ = [
         '_current_page',
         '_pages',
+        '_prefix_filter',
     ]
 
-    def __init__(self, url: str):
+    def __init__(self, url: str, prefix_filter: str):
         super().__init__(url=url)
 
         self._current_page = None
         self._pages = []
+        self._prefix_filter = prefix_filter
 
     def xml_element_start(self, name: str, attrs: Dict[str, str]) -> None:
 
@@ -800,6 +825,8 @@ class PagesRSSSitemapParser(AbstractXMLSitemapParser):
         for page_row in self._pages:
             page = page_row.page()
             if page:
+                if self._prefix_filter and not page.url.startswith(self._prefix_filter):
+                    continue
                 pages.append(page)
 
         pages_sitemap = PagesRSSSitemap(url=self._url, pages=pages)
@@ -871,14 +898,16 @@ class PagesAtomSitemapParser(AbstractXMLSitemapParser):
         '_current_page',
         '_pages',
         '_last_link_rel_self_href',
+        '_prefix_filter',
     ]
 
-    def __init__(self, url: str):
+    def __init__(self, url: str, prefix_filter: str):
         super().__init__(url=url)
 
         self._current_page = None
         self._pages = []
         self._last_link_rel_self_href = None
+        self._prefix_filter = prefix_filter
 
     def xml_element_start(self, name: str, attrs: Dict[str, str]) -> None:
 
@@ -946,6 +975,8 @@ class PagesAtomSitemapParser(AbstractXMLSitemapParser):
         for page_row in self._pages:
             page = page_row.page()
             if page:
+                if self._prefix_filter and not page.url.startswith(self._prefix_filter):
+                    continue
                 pages.append(page)
 
         pages_sitemap = PagesAtomSitemap(url=self._url, pages=pages)
